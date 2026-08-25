@@ -119,7 +119,7 @@ Replies use a write-through flow: the platform is updated first, and the local r
 
 **Consistency:** The social platform remains the source of truth for platform-owned comment data. PostgreSQL is an eventually consistent local read model that is synchronized periodically and updated immediately after successful reply operations.
 
-### 2. Platform adapter abstraction
+### 3. Platform adapter abstraction
 
 All platform-specific behavior is isolated behind `PlatformAdapter`.
 
@@ -127,7 +127,7 @@ The service operates on platform-agnostic concepts such as:
 
 ```ts
 interface PlatformAdapter {
-  getComments(...): Promise<...>;
+  fetchComments(...): Promise<...>;
   postReply(...): Promise<...>;
 }
 ```
@@ -136,7 +136,7 @@ Adding another platform should therefore require a new adapter and registration 
 
 This also provides a clean boundary for differences in platform capabilities, identifiers, pagination, errors, and threading semantics.
 
-### 3. Platform-specific threading
+### 4. Platform-specific threading
 
 Threading behavior is not assumed to be identical across platforms.
 
@@ -146,7 +146,7 @@ The adapter returns the platform's actual resulting parent through `externalPare
 
 This keeps platform-specific behavior inside the adapter instead of leaking it into the domain layer.
 
-### 4. Idempotent synchronization
+### 5. Idempotent synchronization
 
 Synchronization is designed to be safe to repeat.
 
@@ -154,7 +154,7 @@ Comments are merged using an `upsert` keyed by `(platform, externalCommentId)`, 
 
 Parent relationships are resolved in a second pass because a parent comment is not guaranteed to appear before its child in the same platform page.
 
-### 5. Idempotent replies
+### 6. Idempotent replies
 
 `POST /replies` accepts an optional `Idempotency-Key` to protect clients from duplicate replies when a request times out after the platform may already have accepted the operation.
 
@@ -176,7 +176,7 @@ A pending reservation older than two minutes may be reclaimed by a subsequent re
 
 A fully production-grade implementation could further close the remaining ambiguity window using an outbox/reconciliation mechanism.
 
-### 6. Deletion handling
+### 7. Deletion handling
 
 Deletion is handled both proactively and reactively.
 
