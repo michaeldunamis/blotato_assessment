@@ -65,14 +65,14 @@ There's deliberately no `platform` field in any request. `postId` and `commentId
 |---|---|---|
 | `GET` | `/api/posts/:postId/comments` | Top-level comments for a post, paginated. Syncs from the platform first if stale (or `?sync=true`). |
 | `GET` | `/api/comments/:commentId/replies` | Replies to a comment, paginated. |
-| `POST` | `/api/comments/:commentId/replies` | Reply to a comment. Calls the platform, then persists the result. |
+| `POST` | `/api/comments/:commentId/replies` | Reply to a comment. Calls the platform, then persists the result. Accepts an optional `Idempotency-Key` header. |
 | `GET` | `/health` | Liveness check. |
 
 Pagination is cursor-based, keyset over `(publishedAt, id)`. Offset pagination breaks here because the list is appended to between page requests as syncs happen mid-walk.
 
 Replies aren't inlined into the top-level list. Each comment carries a `replyCount`, and replies are fetched on demand, matching how most platform UIs work.
 
-Errors: `NotFoundError → 404`, `UnsupportedPlatformError → 400`, `PlatformApiError → 502`, validation failures `→ 400`.
+Errors: `NotFoundError → 404`, `UnsupportedPlatformError → 400`, `IdempotencyKeyInProgressError → 409`, `PlatformApiError → 502`, validation failures `→ 400`.
 
 ## Major design decisions
 
@@ -82,10 +82,11 @@ Errors: `NotFoundError → 404`, `UnsupportedPlatformError → 400`, `PlatformAp
 
 **Idempotent, two-pass sync.** Adapter pages are merged via `upsert` keyed on `(platform, externalCommentId)`, so re-syncing overlapping pages is a no-op. Parent linkage happens in a second pass, since a comment's parent isn't guaranteed to appear earlier in the same page. Covered by an integration test against real Postgres, not a mock, since this ordering logic is exactly what a mocked test can't verify.
 
+**Idempotent replies.** A client retrying `POST /replies` after a timeout, not knowing whether the first attempt landed, can double-post to the platform without protection. An optional `Idempotency-Key` header fixes this: `IdempotencyKeyRepository.reserve()` atomically claims the key before the platform call (an `INSERT` relying on a unique constraint, not check-then-insert, which would race). A retry racing the original gets `409` instead of triggering its own platform call; a retry after completion gets the original result back. What this doesn't close: a crash between the platform confirming and us persisting locally leaves an orphaned `pending` key with no expiry. Closing that fully needs an outbox pattern, which is more than this endpoint alone needs.
+
 ## Production considerations (not implemented)
 
 - **Rate limiting and retries.** Real platform APIs rate-limit you. Needs a distinct rate-limit error type, retried with backoff honoring `Retry-After`, and a `429` surfaced to our own caller instead of a generic `502`.
-- **Idempotent replies.** A client retry after a timeout can double-post. Fix: an `Idempotency-Key` header, atomically claimed before the platform call. Doesn't fully close the gap where our process crashes between the platform confirming and us persisting; that needs an outbox pattern.
 - **Real-time updates via webhooks.** Polling means new comments are only as fresh as the next TTL cycle. Instagram and X both support webhooks for comment events; a signed webhook route would push comments immediately instead, with polling as fallback.
 - **Auth and multi-tenancy.** No concept of who's asking. A real deployment validates a token, resolves it to a tenant, and scopes every query by it.
 - **Observability.** No metrics beyond default request logging. Nothing answers "is sync falling behind" without grepping logs.

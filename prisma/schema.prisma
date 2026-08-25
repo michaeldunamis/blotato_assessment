@@ -75,8 +75,25 @@ model Comment {
   post   Post     @relation(fields: [postId], references: [id])
   parent Comment? @relation("CommentReplies", fields: [parentId], references: [id])
   replies Comment[] @relation("CommentReplies")
+  idempotencyKeys IdempotencyKey[]
 
   @@unique([platform, externalCommentId])
   @@index([postId, parentId])
   @@map("comments")
+}
+
+/// Dedupes retried POST /replies calls: a client sends the same Idempotency-Key
+/// on a retry (e.g. after a timeout) and gets the original result back instead
+/// of posting a second reply to the platform. `status` starts "pending" the
+/// moment a key is first seen (before the platform call), so a retry that
+/// races the original request gets a 409 rather than triggering its own
+/// platform call — see IdempotencyKeyRepository.reserve.
+model IdempotencyKey {
+  key       String   @id
+  status    String
+  commentId String?
+  comment   Comment? @relation(fields: [commentId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@map("idempotency_keys")
 }

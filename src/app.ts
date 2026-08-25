@@ -3,11 +3,13 @@ import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { PrismaClient } from "@prisma/client";
 import { AdapterRegistry } from "./adapters/adapterRegistry.js";
 import { CommentRepository } from "./repositories/commentRepository.js";
+import { IdempotencyKeyRepository } from "./repositories/idempotencyKeyRepository.js";
 import { PostRepository } from "./repositories/postRepository.js";
 import { SocialAccountRepository } from "./repositories/socialAccountRepository.js";
 import { CommentService } from "./services/commentService.js";
 import { commentRoutes } from "./routes/comments.js";
 import {
+  IdempotencyKeyInProgressError,
   NotFoundError,
   PlatformApiError,
   UnsupportedPlatformError,
@@ -26,12 +28,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const commentRepo = new CommentRepository(prisma);
   const postRepo = new PostRepository(prisma);
   const socialAccountRepo = new SocialAccountRepository(prisma);
+  const idempotencyKeyRepo = new IdempotencyKeyRepository(prisma);
   const adapters = new AdapterRegistry();
   const commentService = new CommentService(
     commentRepo,
     postRepo,
     socialAccountRepo,
     adapters,
+    idempotencyKeyRepo,
     options.commentCacheTtlSeconds ?? 300,
   );
 
@@ -50,6 +54,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     if (error instanceof UnsupportedPlatformError) {
       reply.code(400).send({ error: "UnsupportedPlatform", message: error.message });
+      return;
+    }
+    if (error instanceof IdempotencyKeyInProgressError) {
+      reply.code(409).send({ error: "IdempotencyKeyInProgress", message: error.message });
       return;
     }
     if (error instanceof PlatformApiError) {

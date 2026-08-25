@@ -1,12 +1,13 @@
 import type { Comment } from "@prisma/client";
 import type { IAdapterRegistry } from "../adapters/adapterRegistry.js";
-import { NotFoundError, UnsupportedPlatformError } from "../errors.js";
+import { IdempotencyKeyInProgressError, NotFoundError, UnsupportedPlatformError } from "../errors.js";
 import { isPlatform } from "../types/platform.js";
 import type {
   CommentWithReplyCount,
   ICommentRepository,
   Page,
 } from "../repositories/commentRepository.js";
+import type { IIdempotencyKeyRepository } from "../repositories/idempotencyKeyRepository.js";
 import type { IPostRepository } from "../repositories/postRepository.js";
 import type { ISocialAccountRepository } from "../repositories/socialAccountRepository.js";
 
@@ -27,6 +28,7 @@ export class CommentService {
     private readonly posts: IPostRepository,
     private readonly socialAccounts: ISocialAccountRepository,
     private readonly adapters: IAdapterRegistry,
+    private readonly idempotencyKeys: IIdempotencyKeyRepository,
     private readonly cacheTtlSeconds: number,
   ) {}
 
@@ -60,7 +62,21 @@ export class CommentService {
     return this.comments.listReplies(commentId, options);
   }
 
-  async replyToComment(commentId: string, text: string): Promise<Comment> {
+  async replyToComment(commentId: string, text: string, idempotencyKey?: string | null): Promise<Comment> {
+    if (idempotencyKey) {
+      const reservation = await this.idempotencyKeys.reserve(idempotencyKey);
+      if (reservation.outcome === "existing") {
+        if (reservation.status === "pending") {
+          throw new IdempotencyKeyInProgressError(idempotencyKey);
+        }
+        const existing = reservation.commentId
+          ? await this.comments.findById(reservation.commentId)
+          : null;
+        if (existing) return existing;
+        // Completed row lost its comment link somehow — fall through and retry as if fresh.
+      }
+    }
+
     const parent = await this.comments.findById(commentId);
     if (!parent) throw new NotFoundError(`Comment ${commentId} not found`);
 
@@ -97,12 +113,18 @@ export class CommentService {
       if (resolvedParent) parentId = resolvedParent.id;
     }
 
-    return this.comments.createReply({
+    const created = await this.comments.createReply({
       postId: post.id,
       platform: post.platform,
       parentId,
       comment: normalized,
     });
+
+    if (idempotencyKey) {
+      await this.idempotencyKeys.complete(idempotencyKey, created.id);
+    }
+
+    return created;
   }
 
   private isStale(commentsSyncedAt: Date | null): boolean {

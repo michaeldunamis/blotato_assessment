@@ -28,6 +28,11 @@ const PageQuerySchema = Type.Object({
 
 const DEFAULT_PAGE_SIZE = 20;
 
+const IdempotencyHeaderSchema = Type.Object(
+  { "idempotency-key": Type.Optional(Type.String()) },
+  { additionalProperties: true },
+);
+
 export interface CommentRoutesOptions {
   commentService: CommentService;
 }
@@ -88,13 +93,15 @@ export const commentRoutes: FastifyPluginAsyncTypebox<CommentRoutesOptions> = as
       schema: {
         params: Type.Object({ commentId: Type.String() }),
         body: Type.Object({ text: Type.String({ minLength: 1, maxLength: 2000 }) }),
+        headers: IdempotencyHeaderSchema,
         response: { 201: CommentSchema },
       },
     },
     async (request, reply) => {
       const { commentId } = request.params;
       const { text } = request.body;
-      const created = await commentService.replyToComment(commentId, text);
+      const idempotencyKey = request.headers["idempotency-key"];
+      const created = await commentService.replyToComment(commentId, text, idempotencyKey);
       reply.code(201);
       return toCommentDTO(created);
     },

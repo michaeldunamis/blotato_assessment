@@ -10,7 +10,8 @@ import type { IPostRepository } from "../src/repositories/postRepository.js";
 import type { ISocialAccountRepository } from "../src/repositories/socialAccountRepository.js";
 import type { IAdapterRegistry } from "../src/adapters/adapterRegistry.js";
 import type { PlatformAdapter } from "../src/adapters/platformAdapter.js";
-import { NotFoundError } from "../src/errors.js";
+import type { IIdempotencyKeyRepository } from "../src/repositories/idempotencyKeyRepository.js";
+import { IdempotencyKeyInProgressError, NotFoundError } from "../src/errors.js";
 
 function makePost(overrides: Partial<Post> = {}): Post {
   return {
@@ -89,6 +90,16 @@ function makeAdapterRegistry(adapter: Partial<PlatformAdapter>): IAdapterRegistr
   return { get: vi.fn().mockReturnValue(adapter) };
 }
 
+function makeIdempotencyKeyRepo(
+  overrides: Partial<IIdempotencyKeyRepository> = {},
+): IIdempotencyKeyRepository {
+  return {
+    reserve: vi.fn().mockResolvedValue({ outcome: "reserved" }),
+    complete: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
 describe("CommentService.listTopLevelComments", () => {
   it("throws NotFoundError when the post doesn't exist", async () => {
     const service = new CommentService(
@@ -96,6 +107,7 @@ describe("CommentService.listTopLevelComments", () => {
       makePostRepo({ findById: vi.fn().mockResolvedValue(null) }),
       makeSocialAccountRepo(),
       makeAdapterRegistry({}),
+      makeIdempotencyKeyRepo(),
       300,
     );
 
@@ -126,6 +138,7 @@ describe("CommentService.listTopLevelComments", () => {
       makePostRepo({ findById: vi.fn().mockResolvedValue(makePost({ commentsSyncedAt: null })), markCommentsSynced }),
       makeSocialAccountRepo(),
       makeAdapterRegistry({ fetchComments }),
+      makeIdempotencyKeyRepo(),
       300,
     );
 
@@ -149,6 +162,7 @@ describe("CommentService.listTopLevelComments", () => {
       }),
       makeSocialAccountRepo(),
       makeAdapterRegistry({ fetchComments }),
+      makeIdempotencyKeyRepo(),
       300,
     );
 
@@ -165,6 +179,7 @@ describe("CommentService.listTopLevelComments", () => {
       makePostRepo({ findById: vi.fn().mockResolvedValue(makePost({ commentsSyncedAt: new Date() })) }),
       makeSocialAccountRepo(),
       makeAdapterRegistry({ fetchComments }),
+      makeIdempotencyKeyRepo(),
       300,
     );
 
@@ -180,6 +195,7 @@ describe("CommentService.listTopLevelComments", () => {
       makePostRepo({ findById: vi.fn().mockResolvedValue(makePost({ commentsSyncedAt: null })) }),
       makeSocialAccountRepo(),
       makeAdapterRegistry({ fetchComments }),
+      makeIdempotencyKeyRepo(),
       300,
     );
 
@@ -196,6 +212,7 @@ describe("CommentService.replyToComment", () => {
       makePostRepo(),
       makeSocialAccountRepo(),
       makeAdapterRegistry({}),
+      makeIdempotencyKeyRepo(),
       300,
     );
 
@@ -221,6 +238,7 @@ describe("CommentService.replyToComment", () => {
       makePostRepo(),
       makeSocialAccountRepo(),
       makeAdapterRegistry({ postReply }),
+      makeIdempotencyKeyRepo(),
       300,
     );
 
@@ -260,11 +278,89 @@ describe("CommentService.replyToComment", () => {
       makePostRepo(),
       makeSocialAccountRepo(),
       makeAdapterRegistry({ postReply }),
+      makeIdempotencyKeyRepo(),
       300,
     );
 
     await service.replyToComment("comment_reply", "thanks!");
 
     expect(createReply).toHaveBeenCalledWith(expect.objectContaining({ parentId: "comment_top" }));
+  });
+
+  it("returns the original comment for a completed idempotency key without calling the platform again", async () => {
+    const alreadyCreated = makeComment({ id: "comment_2", text: "thanks!" });
+    const postReply = vi.fn();
+    const idempotencyKeys = makeIdempotencyKeyRepo({
+      reserve: vi.fn().mockResolvedValue({
+        outcome: "existing",
+        status: "completed",
+        commentId: "comment_2",
+      }),
+    });
+
+    const service = new CommentService(
+      makeCommentRepo({ findById: vi.fn().mockResolvedValue(alreadyCreated) }),
+      makePostRepo(),
+      makeSocialAccountRepo(),
+      makeAdapterRegistry({ postReply }),
+      idempotencyKeys,
+      300,
+    );
+
+    const result = await service.replyToComment("comment_1", "thanks!", "key-123");
+
+    expect(postReply).not.toHaveBeenCalled();
+    expect(result).toBe(alreadyCreated);
+  });
+
+  it("rejects with IdempotencyKeyInProgressError when a duplicate request races an in-flight one", async () => {
+    const postReply = vi.fn();
+    const idempotencyKeys = makeIdempotencyKeyRepo({
+      reserve: vi.fn().mockResolvedValue({ outcome: "existing", status: "pending", commentId: null }),
+    });
+
+    const service = new CommentService(
+      makeCommentRepo(),
+      makePostRepo(),
+      makeSocialAccountRepo(),
+      makeAdapterRegistry({ postReply }),
+      idempotencyKeys,
+      300,
+    );
+
+    await expect(service.replyToComment("comment_1", "thanks!", "key-123")).rejects.toThrow(
+      IdempotencyKeyInProgressError,
+    );
+    expect(postReply).not.toHaveBeenCalled();
+  });
+
+  it("marks the idempotency key completed with the new comment's id after a successful reply", async () => {
+    const parent = makeComment({ id: "comment_1", externalCommentId: "ext_comment_1" });
+    const postReply = vi.fn().mockResolvedValue({
+      externalId: "ext_reply_1",
+      externalParentId: "ext_comment_1",
+      authorExternalId: "me",
+      authorName: "Me",
+      authorAvatarUrl: null,
+      text: "thanks!",
+      likeCount: 0,
+      publishedAt: new Date("2026-01-02"),
+    });
+    const createReply = vi.fn().mockResolvedValue(makeComment({ id: "comment_2", text: "thanks!" }));
+    const complete = vi.fn().mockResolvedValue(undefined);
+    const idempotencyKeys = makeIdempotencyKeyRepo({ complete });
+
+    const service = new CommentService(
+      makeCommentRepo({ findById: vi.fn().mockResolvedValue(parent), createReply }),
+      makePostRepo(),
+      makeSocialAccountRepo(),
+      makeAdapterRegistry({ postReply }),
+      idempotencyKeys,
+      300,
+    );
+
+    await service.replyToComment("comment_1", "thanks!", "key-123");
+
+    expect(complete).toHaveBeenCalledWith("key-123", "comment_2");
   });
 });

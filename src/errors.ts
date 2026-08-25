@@ -23,3 +23,11 @@ export class PlatformApiError extends Error {
     this.name = "PlatformApiError";
   }
 }
+
+/** A request is already in flight for this Idempotency-Key — the retry that raced it should back off, not double-post. */
+export class IdempotencyKeyInProgressError extends Error {
+  constructor(key: string) {
+    super(`A request with Idempotency-Key "${key}" is already being processed`);
+    this.name = "IdempotencyKeyInProgressError";
+  }
+}
