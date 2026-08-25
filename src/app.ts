@@ -9,6 +9,7 @@ import { SocialAccountRepository } from "./repositories/socialAccountRepository.
 import { CommentService } from "./services/commentService.js";
 import { commentRoutes } from "./routes/comments.js";
 import {
+  CommentDeletedError,
   IdempotencyKeyInProgressError,
   NotFoundError,
   PlatformApiError,
@@ -54,6 +55,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     if (error instanceof UnsupportedPlatformError) {
       reply.code(400).send({ error: "UnsupportedPlatform", message: error.message });
+      return;
+    }
+    if (error instanceof CommentDeletedError) {
+      reply.code(410).send({ error: "CommentDeleted", message: error.message });
       return;
     }
     if (error instanceof IdempotencyKeyInProgressError) {

@@ -1,7 +1,14 @@
 import type { Comment } from "@prisma/client";
 import type { IAdapterRegistry } from "../adapters/adapterRegistry.js";
-import { IdempotencyKeyInProgressError, NotFoundError, UnsupportedPlatformError } from "../errors.js";
+import {
+  CommentDeletedError,
+  IdempotencyKeyInProgressError,
+  NotFoundError,
+  PlatformCommentNotFoundError,
+  UnsupportedPlatformError,
+} from "../errors.js";
 import { isPlatform } from "../types/platform.js";
+import type { NormalizedComment } from "../types/comment.js";
 import type {
   CommentWithReplyCount,
   ICommentRepository,
@@ -77,54 +84,81 @@ export class CommentService {
       }
     }
 
-    const parent = await this.comments.findById(commentId);
-    if (!parent) throw new NotFoundError(`Comment ${commentId} not found`);
+    try {
+      const parent = await this.comments.findById(commentId);
+      if (!parent) throw new NotFoundError(`Comment ${commentId} not found`);
+      if (parent.deletedAt) throw new CommentDeletedError(parent.id);
 
-    const post = await this.posts.findById(parent.postId);
-    if (!post) throw new NotFoundError(`Post ${parent.postId} not found`);
+      const post = await this.posts.findById(parent.postId);
+      if (!post) throw new NotFoundError(`Post ${parent.postId} not found`);
 
-    const socialAccount = await this.socialAccounts.findById(post.socialAccountId);
-    if (!socialAccount) {
-      throw new NotFoundError(`Social account ${post.socialAccountId} not found`);
-    }
+      const socialAccount = await this.socialAccounts.findById(post.socialAccountId);
+      if (!socialAccount) {
+        throw new NotFoundError(`Social account ${post.socialAccountId} not found`);
+      }
 
-    if (!isPlatform(post.platform)) throw new UnsupportedPlatformError(post.platform);
-    const adapter = this.adapters.get(post.platform);
+      if (!isPlatform(post.platform)) throw new UnsupportedPlatformError(post.platform);
+      const adapter = this.adapters.get(post.platform);
 
-    const normalized = await adapter.postReply({
-      externalPostId: post.externalPostId,
-      externalParentCommentId: parent.externalCommentId,
-      account: {
+      let normalized: NormalizedComment;
+      try {
+        normalized = await adapter.postReply({
+          externalPostId: post.externalPostId,
+          externalParentCommentId: parent.externalCommentId,
+          account: {
+            platform: post.platform,
+            externalAccountId: socialAccount.externalAccountId,
+            accessToken: socialAccount.accessToken,
+          },
+          text,
+        });
+      } catch (err) {
+        if (err instanceof PlatformCommentNotFoundError) {
+          // The platform confirms the target is gone and nothing was posted —
+          // self-heal our cache immediately instead of waiting for the next sync.
+          await this.comments.markDeleted(parent.id);
+          throw new CommentDeletedError(parent.id);
+        }
+        throw err;
+      }
+
+      // Trust the adapter's reported parent over the id we requested —
+      // e.g. Instagram may flatten a reply-to-a-reply onto its ancestor.
+      let parentId = parent.id;
+      if (normalized.externalParentId && normalized.externalParentId !== parent.externalCommentId) {
+        const resolvedParent = await this.comments.findByExternalId(
+          post.platform,
+          normalized.externalParentId,
+        );
+        if (resolvedParent) parentId = resolvedParent.id;
+      }
+
+      const created = await this.comments.createReply({
+        postId: post.id,
         platform: post.platform,
-        externalAccountId: socialAccount.externalAccountId,
-        accessToken: socialAccount.accessToken,
-      },
-      text,
-    });
+        parentId,
+        comment: normalized,
+      });
 
-    // Trust the adapter's reported parent over the id we requested —
-    // e.g. Instagram may flatten a reply-to-a-reply onto its ancestor.
-    let parentId = parent.id;
-    if (normalized.externalParentId && normalized.externalParentId !== parent.externalCommentId) {
-      const resolvedParent = await this.comments.findByExternalId(
-        post.platform,
-        normalized.externalParentId,
-      );
-      if (resolvedParent) parentId = resolvedParent.id;
+      if (idempotencyKey) {
+        await this.idempotencyKeys.complete(idempotencyKey, created.id);
+      }
+
+      return created;
+    } catch (err) {
+      // Only release the key when we're certain the platform was never
+      // actually called (or, for CommentDeletedError, that it confirmed
+      // nothing was posted) — for anything else we don't know whether a
+      // retry would double-post, so the key stays pending on purpose.
+      const safeToRelease =
+        err instanceof NotFoundError ||
+        err instanceof CommentDeletedError ||
+        err instanceof UnsupportedPlatformError;
+      if (idempotencyKey && safeToRelease) {
+        await this.idempotencyKeys.release(idempotencyKey);
+      }
+      throw err;
     }
-
-    const created = await this.comments.createReply({
-      postId: post.id,
-      platform: post.platform,
-      parentId,
-      comment: normalized,
-    });
-
-    if (idempotencyKey) {
-      await this.idempotencyKeys.complete(idempotencyKey, created.id);
-    }
-
-    return created;
   }
 
   private isStale(commentsSyncedAt: Date | null): boolean {

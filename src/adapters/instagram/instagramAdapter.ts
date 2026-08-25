@@ -3,12 +3,13 @@ import type {
   FetchCommentsPage,
   NormalizedComment,
 } from "../../types/comment.js";
-import { PlatformApiError } from "../../errors.js";
+import { PlatformCommentNotFoundError, toPlatformError } from "../../errors.js";
 import type {
   FetchCommentsParams,
   PlatformAdapter,
   PostReplyParams,
 } from "../platformAdapter.js";
+import { TargetCommentNotFoundError } from "../remoteClient.js";
 import {
   instagramClient,
   type IgComment,
@@ -44,7 +45,7 @@ export class InstagramAdapter implements PlatformAdapter {
         nextCursor: String(nextOffset),
       };
     } catch (cause) {
-      throw new PlatformApiError("Failed to fetch Instagram comments", this.platform, cause);
+      throw toPlatformError("Failed to fetch Instagram comments", this.platform, cause);
     }
   }
 
@@ -60,7 +61,7 @@ export class InstagramAdapter implements PlatformAdapter {
         params.externalParentCommentId,
       );
       if (!target) {
-        throw new Error(`Comment ${params.externalParentCommentId} not found`);
+        throw new TargetCommentNotFoundError(params.externalParentCommentId);
       }
 
       const isReplyToAReply = target.parentId !== null;
@@ -76,7 +77,10 @@ export class InstagramAdapter implements PlatformAdapter {
       );
       return toNormalized(created);
     } catch (cause) {
-      throw new PlatformApiError("Failed to post Instagram reply", this.platform, cause);
+      if (cause instanceof TargetCommentNotFoundError) {
+        throw new PlatformCommentNotFoundError(this.platform, cause.externalCommentId);
+      }
+      throw toPlatformError("Failed to post Instagram reply", this.platform, cause);
     }
   }
 }

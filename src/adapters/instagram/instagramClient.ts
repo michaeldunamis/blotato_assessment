@@ -1,4 +1,4 @@
-import { RemoteClient } from "../remoteClient.js";
+import { RemoteClient, TargetCommentNotFoundError } from "../remoteClient.js";
 
 /**
  * In-memory stand-in for the Instagram Graph API so the take-home runs
@@ -63,7 +63,7 @@ class InstagramClient extends RemoteClient<IgComment> {
     const comments = this.getOrSeed(postId);
     const parent = comments.find((c) => c.id === parentCommentId);
     if (!parent) {
-      throw new Error(`Comment ${parentCommentId} not found on post ${postId}`);
+      throw new TargetCommentNotFoundError(parentCommentId);
     }
     if (parent.parentId !== null) {
       throw new Error(

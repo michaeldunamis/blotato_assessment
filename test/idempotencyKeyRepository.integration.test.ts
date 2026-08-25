@@ -1,6 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
-import { IdempotencyKeyRepository } from "../src/repositories/idempotencyKeyRepository.js";
+import {
+  IdempotencyKeyRepository,
+  PENDING_RESERVATION_TTL_MS,
+} from "../src/repositories/idempotencyKeyRepository.js";
 
 if (!process.env.DATABASE_URL) {
   throw new Error(
@@ -87,5 +90,29 @@ describe("IdempotencyKeyRepository (integration)", () => {
 
     const outcomes = [a.outcome, b.outcome].sort();
     expect(outcomes).toEqual(["existing", "reserved"]);
+  });
+
+  it("reclaims a pending reservation once it's past its TTL, letting a fresh attempt through", async () => {
+    await repo.reserve("key-5");
+    await prisma.idempotencyKey.update({
+      where: { key: "key-5" },
+      data: { createdAt: new Date(Date.now() - PENDING_RESERVATION_TTL_MS - 1000) },
+    });
+
+    await expect(repo.reserve("key-5")).resolves.toEqual({ outcome: "reserved" });
+  });
+
+  it("does not reclaim a pending reservation still within its TTL", async () => {
+    await repo.reserve("key-6");
+    await prisma.idempotencyKey.update({
+      where: { key: "key-6" },
+      data: { createdAt: new Date(Date.now() - PENDING_RESERVATION_TTL_MS + 5000) },
+    });
+
+    await expect(repo.reserve("key-6")).resolves.toEqual({
+      outcome: "existing",
+      status: "pending",
+      commentId: null,
+    });
   });
 });

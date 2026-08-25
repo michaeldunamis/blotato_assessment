@@ -25,6 +25,8 @@ export interface ICommentRepository {
     parentId: string;
     comment: NormalizedComment;
   }): Promise<Comment>;
+  /** Marks a comment deleted immediately, e.g. when the platform rejects a reply because it's gone — without waiting for the next sync to discover it. */
+  markDeleted(id: string): Promise<void>;
   listTopLevel(postId: string, options: ListOptions): Promise<Page<CommentWithReplyCount>>;
   listReplies(parentId: string, options: ListOptions): Promise<Page<Comment>>;
 }
@@ -130,6 +132,10 @@ export class CommentRepository implements ICommentRepository {
         publishedAt: params.comment.publishedAt,
       },
     });
+  }
+
+  async markDeleted(id: string): Promise<void> {
+    await this.db.comment.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 
   async listTopLevel(postId: string, options: ListOptions): Promise<Page<CommentWithReplyCount>> {

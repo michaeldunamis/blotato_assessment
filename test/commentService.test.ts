@@ -11,7 +11,12 @@ import type { ISocialAccountRepository } from "../src/repositories/socialAccount
 import type { IAdapterRegistry } from "../src/adapters/adapterRegistry.js";
 import type { PlatformAdapter } from "../src/adapters/platformAdapter.js";
 import type { IIdempotencyKeyRepository } from "../src/repositories/idempotencyKeyRepository.js";
-import { IdempotencyKeyInProgressError, NotFoundError } from "../src/errors.js";
+import {
+  CommentDeletedError,
+  IdempotencyKeyInProgressError,
+  NotFoundError,
+  PlatformCommentNotFoundError,
+} from "../src/errors.js";
 
 function makePost(overrides: Partial<Post> = {}): Post {
   return {
@@ -65,6 +70,7 @@ function makeCommentRepo(overrides: Partial<ICommentRepository> = {}): ICommentR
     findByExternalId: vi.fn().mockResolvedValue(null),
     upsertPage: vi.fn().mockResolvedValue(undefined),
     createReply: vi.fn(),
+    markDeleted: vi.fn().mockResolvedValue(undefined),
     listTopLevel: vi.fn().mockResolvedValue({ items: [], nextCursor: null } satisfies Page<CommentWithReplyCount>),
     listReplies: vi.fn().mockResolvedValue({ items: [], nextCursor: null } satisfies Page<Comment>),
     ...overrides,
@@ -96,6 +102,7 @@ function makeIdempotencyKeyRepo(
   return {
     reserve: vi.fn().mockResolvedValue({ outcome: "reserved" }),
     complete: vi.fn().mockResolvedValue(undefined),
+    release: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -362,5 +369,77 @@ describe("CommentService.replyToComment", () => {
     await service.replyToComment("comment_1", "thanks!", "key-123");
 
     expect(complete).toHaveBeenCalledWith("key-123", "comment_2");
+  });
+
+  it("throws CommentDeletedError without calling the platform when the parent was already soft-deleted", async () => {
+    const parent = makeComment({ id: "comment_1", deletedAt: new Date("2026-01-05") });
+    const postReply = vi.fn();
+
+    const service = new CommentService(
+      makeCommentRepo({ findById: vi.fn().mockResolvedValue(parent) }),
+      makePostRepo(),
+      makeSocialAccountRepo(),
+      makeAdapterRegistry({ postReply }),
+      makeIdempotencyKeyRepo(),
+      300,
+    );
+
+    await expect(service.replyToComment("comment_1", "thanks!")).rejects.toThrow(CommentDeletedError);
+    expect(postReply).not.toHaveBeenCalled();
+  });
+
+  it("self-heals the cache and throws CommentDeletedError when the platform reports the target is gone", async () => {
+    const parent = makeComment({ id: "comment_1", externalCommentId: "ext_comment_1" });
+    const postReply = vi.fn().mockRejectedValue(new PlatformCommentNotFoundError("instagram", "ext_comment_1"));
+    const markDeleted = vi.fn().mockResolvedValue(undefined);
+
+    const service = new CommentService(
+      makeCommentRepo({ findById: vi.fn().mockResolvedValue(parent), markDeleted }),
+      makePostRepo(),
+      makeSocialAccountRepo(),
+      makeAdapterRegistry({ postReply }),
+      makeIdempotencyKeyRepo(),
+      300,
+    );
+
+    await expect(service.replyToComment("comment_1", "thanks!")).rejects.toThrow(CommentDeletedError);
+    expect(markDeleted).toHaveBeenCalledWith("comment_1");
+  });
+
+  it("releases the idempotency key when the parent was already soft-deleted", async () => {
+    const parent = makeComment({ id: "comment_1", deletedAt: new Date("2026-01-05") });
+    const release = vi.fn().mockResolvedValue(undefined);
+    const idempotencyKeys = makeIdempotencyKeyRepo({ release });
+
+    const service = new CommentService(
+      makeCommentRepo({ findById: vi.fn().mockResolvedValue(parent) }),
+      makePostRepo(),
+      makeSocialAccountRepo(),
+      makeAdapterRegistry({}),
+      idempotencyKeys,
+      300,
+    );
+
+    await expect(service.replyToComment("comment_1", "thanks!", "key-123")).rejects.toThrow(CommentDeletedError);
+    expect(release).toHaveBeenCalledWith("key-123");
+  });
+
+  it("does not release the idempotency key when the platform call fails ambiguously", async () => {
+    const parent = makeComment({ id: "comment_1", externalCommentId: "ext_comment_1" });
+    const postReply = vi.fn().mockRejectedValue(new Error("network blip"));
+    const release = vi.fn().mockResolvedValue(undefined);
+    const idempotencyKeys = makeIdempotencyKeyRepo({ release });
+
+    const service = new CommentService(
+      makeCommentRepo({ findById: vi.fn().mockResolvedValue(parent) }),
+      makePostRepo(),
+      makeSocialAccountRepo(),
+      makeAdapterRegistry({ postReply }),
+      idempotencyKeys,
+      300,
+    );
+
+    await expect(service.replyToComment("comment_1", "thanks!", "key-123")).rejects.toThrow("network blip");
+    expect(release).not.toHaveBeenCalled();
   });
 });

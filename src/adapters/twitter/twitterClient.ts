@@ -1,4 +1,4 @@
-import { RemoteClient } from "../remoteClient.js";
+import { RemoteClient, TargetCommentNotFoundError } from "../remoteClient.js";
 
 /**
  * In-memory stand-in for the Twitter/X API v2 client so the take-home
@@ -62,7 +62,7 @@ class TwitterClient extends RemoteClient<TweetComment> {
     const comments = this.getOrSeed(postId);
     const parentExists = comments.some((c) => c.id === inReplyToId);
     if (!parentExists) {
-      throw new Error(`Tweet ${inReplyToId} not found on post ${postId}`);
+      throw new TargetCommentNotFoundError(inReplyToId);
     }
     const reply: TweetComment = {
       id: this.generateId("tw"),

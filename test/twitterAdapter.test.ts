@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TwitterAdapter } from "../src/adapters/twitter/twitterAdapter.js";
-import { PlatformApiError } from "../src/errors.js";
+import { PlatformCommentNotFoundError } from "../src/errors.js";
 
 const account = { platform: "twitter" as const, externalAccountId: "acct_1", accessToken: "token" };
 
@@ -44,7 +44,7 @@ describe("TwitterAdapter", () => {
     expect(reply2.externalParentId).toBe(reply1.externalId);
   });
 
-  it("wraps an unknown parent comment id in a PlatformApiError", async () => {
+  it("throws PlatformCommentNotFoundError for an unknown parent comment id", async () => {
     await expect(
       adapter.postReply({
         externalPostId: "post_missing_1",
@@ -52,6 +52,6 @@ describe("TwitterAdapter", () => {
         account,
         text: "hi",
       }),
-    ).rejects.toThrow(PlatformApiError);
+    ).rejects.toThrow(PlatformCommentNotFoundError);
   });
 });

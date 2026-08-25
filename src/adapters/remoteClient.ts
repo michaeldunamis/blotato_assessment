@@ -1,4 +1,16 @@
 /**
+ * Thrown by a client's postReply when the target comment id isn't in its
+ * store — caught by the adapter and translated into PlatformCommentNotFoundError,
+ * so CommentService can react to it specifically instead of a generic 502.
+ */
+export class TargetCommentNotFoundError extends Error {
+  constructor(public readonly externalCommentId: string) {
+    super(`Comment ${externalCommentId} not found`);
+    this.name = "TargetCommentNotFoundError";
+  }
+}
+
+/**
  * Shared scaffolding for the in-memory stand-ins (`twitterClient`,
  * `instagramClient`). A real client would NOT extend this — it'd just
  * make HTTP calls and wouldn't need a store, a seed step, or an id counter.
