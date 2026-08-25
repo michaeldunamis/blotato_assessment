@@ -1,0 +1,82 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// A connected social account we call platform APIs on behalf of. Real
+/// deployment: `accessToken` would be a GCP Secret Manager reference,
+/// not the raw token — simplified here since auth is out of scope.
+model SocialAccount {
+  id               String   @id @default(uuid())
+  platform         String
+  externalAccountId String
+  displayName      String
+  accessToken      String
+  createdAt        DateTime @default(now())
+
+  posts Post[]
+
+  @@unique([platform, externalAccountId])
+  @@map("social_accounts")
+}
+
+/// A post that was published to a platform through Blotato.
+model Post {
+  id              String   @id @default(uuid())
+  platform        String
+  externalPostId  String
+  socialAccountId String
+  publishedAt     DateTime
+  createdAt       DateTime @default(now())
+
+  /// Last time comments were pulled from the platform — drives the
+  /// cache-staleness check in CommentService.
+  commentsSyncedAt DateTime?
+
+  /// How far the last sync got, so the next one resumes instead of
+  /// re-walking the thread from the start (see CommentService.syncFromPlatform).
+  commentsSyncCursor String?
+
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id])
+  comments      Comment[]
+
+  @@unique([platform, externalPostId])
+  @@map("posts")
+}
+
+/// A comment or reply, normalized across platforms and cached locally.
+/// parentId self-references for reply threads; adapters enforce each
+/// platform's actual threading rules (see PlatformAdapter).
+model Comment {
+  id               String    @id @default(uuid())
+  platform         String
+  externalCommentId String
+  postId           String
+  parentId         String?
+
+  authorExternalId String
+  authorName       String
+  authorAvatarUrl  String?
+  text             String
+  likeCount        Int       @default(0)
+
+  /// When the comment was created on the platform (not when we synced it).
+  publishedAt DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  /// Soft-delete when a sync no longer sees this comment upstream — avoids dangling reply threads.
+  deletedAt DateTime?
+
+  post   Post     @relation(fields: [postId], references: [id])
+  parent Comment? @relation("CommentReplies", fields: [parentId], references: [id])
+  replies Comment[] @relation("CommentReplies")
+
+  @@unique([platform, externalCommentId])
+  @@index([postId, parentId])
+  @@map("comments")
+}
