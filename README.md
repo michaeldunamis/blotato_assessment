@@ -115,6 +115,10 @@ The current implementation demonstrates bounded synchronization and persisted cu
 
 Replies use a write-through flow: the platform is updated first, and the local record is persisted only after the platform confirms the reply.
 
+### 2. Consistency model
+
+**Consistency:** The social platform remains the source of truth for platform-owned comment data. PostgreSQL is an eventually consistent local read model that is synchronized periodically and updated immediately after successful reply operations.
+
 ### 2. Platform adapter abstraction
 
 All platform-specific behavior is isolated behind `PlatformAdapter`.
