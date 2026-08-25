@@ -90,13 +90,8 @@ Errors: `NotFoundError → 404`, `UnsupportedPlatformError → 400`, `PlatformAp
 - **Auth and multi-tenancy.** No concept of who's asking. A real deployment validates a token, resolves it to a tenant, and scopes every query by it.
 - **Observability.** No metrics beyond default request logging. Nothing answers "is sync falling behind" without grepping logs.
 - **OAuth token lifecycle.** `accessToken` is treated as static. Real tokens expire and need refresh/rotation handling.
-- **Comment moderation / abuse.** Nothing rate-limits our own callers or screens content.
 - **Data retention / privacy.** No purge path for a platform-side deletion or an erasure request; `deletedAt` only means "no longer seen upstream."
-- **Schema migration rollout safety.** No explicit zero-downtime deploy policy.
 - **Platform API versioning.** No detection for a breaking upstream API change; it'd surface as silent sync degradation.
-- **Database scaling.** No read-replica, archiving, or index-tuning plan for the `comments` table at scale.
-- **Cost monitoring.** No per-account cost tracking for platform calls or DB usage.
-- **Backup and disaster recovery.** No explicit backup policy, though `comments` itself is recoverable by re-sync since it's a cache, not a system of record.
 
 ## Assumptions
 
