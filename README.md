@@ -43,7 +43,7 @@ ICommentRepository ─────→ PostgreSQL (local read model)
       └──────────────────→ PlatformAdapter → Platform API
 ```
 
-`CommentService` depends on repository and platform interfaces rather than concrete implementations. This keeps business logic independent of both PostgreSQL and individual social platforms.
+`CommentService` depends on repository and platform interfaces rather than concrete implementations. This keeps business logic independent of PostgreSQL and individual social platforms.
 
 Unit tests in `test/commentService.test.ts` run without a database or external API. Each platform adapter currently uses an in-memory client that models the relevant platform behavior; replacing it with a real SDK is isolated to the adapter layer.
 
@@ -105,11 +105,13 @@ Replies are not embedded in the top-level comment response. Each comment exposes
 
 ### 1. Local read model with cache-aside synchronization
 
-Reads are served from PostgreSQL. When `comments_synced_at` is older than `COMMENT_CACHE_TTL_SECONDS`, the service synchronizes comments from the platform before returning the result. `?sync=true` allows an explicit refresh.
+Reads are served from PostgreSQL. When `comments_synced_at` exceeds `COMMENT_CACHE_TTL_SECONDS`, the service synchronizes a bounded number of pages before returning the result. `?sync=true` allows an explicit refresh.
 
-PostgreSQL is treated as a **persisted local read model**, rather than a disposable cache. It contains internal identifiers, resolved thread relationships, deletion state, and idempotency records that cannot be reconstructed solely from platform data.
+PostgreSQL is treated as a **persisted local read model**, storing internal identifiers, resolved thread relationships, deletion state, and idempotency records.
 
-Each synchronization processes at most five platform pages per request to bound latency and external API usage. A persisted platform cursor allows larger comment threads to converge over subsequent synchronization cycles instead of repeatedly fetching the same pages.
+Each request processes at most five platform pages synchronously to bound latency. If more pages remain, the persisted cursor allows synchronization to continue asynchronously without making the API request wait for the entire comment history.
+
+The current implementation demonstrates bounded synchronization and persisted cursors; a production deployment would use a durable background worker to process remaining pages.
 
 Replies use a write-through flow: the platform is updated first, and the local record is persisted only after the platform confirms the reply.
 
@@ -121,7 +123,7 @@ The service operates on platform-agnostic concepts such as:
 
 ```ts
 interface PlatformAdapter {
-  fetchComments(...): Promise<...>;
+  getComments(...): Promise<...>;
   postReply(...): Promise<...>;
 }
 ```
@@ -166,7 +168,7 @@ For ambiguous failures — such as a platform timeout or a crash after the platf
 
 A concurrent request using a pending key receives `409 Conflict`. Once completed, subsequent requests using the same key return the original result.
 
-Pending reservations older than two minutes may be reclaimed by a subsequent request. This bounds the lifetime of an abandoned reservation while retaining protection against immediate duplicate retries.
+A pending reservation older than two minutes may be reclaimed by a subsequent request. This bounds the lifetime of an abandoned reservation while retaining protection against immediate duplicate retries.
 
 A fully production-grade implementation could further close the remaining ambiguity window using an outbox/reconciliation mechanism.
 
@@ -182,20 +184,20 @@ If the comment was deleted upstream after the last synchronization, the platform
 
 The following are intentionally outside the scope of this take-home:
 
+* **Background synchronization:** A durable job queue and worker would continue synchronization using persisted platform cursors after the API request completes. Jobs would be deduplicated per post/platform and retried safely.
 * **Rate limiting and retry/backoff:** Platform-specific limits would be handled with bounded retries, exponential backoff, and `Retry-After` where supported.
 * **Webhooks:** Signed platform webhooks could reduce synchronization latency and keep the local read model fresher than polling alone.
 * **Authentication and multi-tenancy:** Requests would be authenticated and scoped to the appropriate tenant and connected social accounts.
 * **Observability:** Production deployment would add structured logging, metrics, tracing, and platform-specific error/latency monitoring.
 * **OAuth lifecycle:** Access tokens would require secure storage, expiration handling, refresh, and rotation.
 * **Data retention/privacy:** A production implementation would support retention policies and user/data erasure requirements.
-* **Platform API versioning:** Adapter contracts would isolate upstream API changes and allow platform-specific version migrations.
 
 ## Assumptions
 
 * No real platform credentials are required. Adapters wrap in-memory clients modeled on documented platform behavior.
 * Authentication and authorization are intentionally omitted because they are not part of the requested functionality. In production, every post/comment lookup and mutation would be scoped to the authenticated tenant and connected social account.
 * `accessToken` is stored directly for simplicity in this take-home. Production credentials would be stored using a secrets-management system or encrypted credential store.
-* Each synchronization processes at most five pages per request to bound latency and platform API usage. Larger threads converge through subsequent synchronization cycles.
+* Each synchronization processes at most five pages per request to bound latency and platform API usage. Larger threads converge through subsequent synchronization cycles or, in production, through background synchronization.
 * Clients may provide an `Idempotency-Key` for reply requests. When provided, retries using the same key return the original result rather than creating another platform reply.
 
 ## AI usage disclosure
